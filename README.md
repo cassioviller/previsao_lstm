@@ -47,6 +47,6 @@ python src/main.py
 gite o ticker (ex.: AAPL, PETR4.SA, etc.):
 
 
-📈 Exemplo de Saída
+📈 Exemplo de Saída (PETR4.SA)
 
 ![Figure_1](https://github.com/user-attachments/assets/d1e1f240-c06f-4ec5-96ca-800bc54c7fa5)
