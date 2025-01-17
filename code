@@ -1,0 +1,165 @@
+import os
+import numpy as np
+import pandas as pd
+import datetime
+import matplotlib.pyplot as plt
+import mplcyberpunk
+
+# Para obter dados do Yahoo Finance
+import yfinance as yf
+
+# Modelagem
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.preprocessing import MinMaxScaler
+
+# Deep Learning
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, Dropout
+
+# Setar seeds para reprodutibilidade 
+np.random.seed(42)
+tf.random.set_seed(42)
+
+#######################################
+# 1. INPUT DO USUÁRIO: TICKER
+#######################################
+ticker_input = input("Digite o ticker (ex.: AAPL, PETR4.SA, etc.): ")
+
+# Parâmetros de data
+start_date = "2020-01-01"
+end_date   = "2023-01-01"
+
+print(f"\nBuscando dados de {ticker_input} de {start_date} até {end_date} ...")
+df_raw = yf.download(ticker_input, start=start_date, end=end_date)
+
+if df_raw.empty:
+    print("Não foi possível obter dados para esse ticker. Verifique se está correto.")
+    exit(1)
+
+print(df_raw.head())
+
+#######################################
+# 2. PREPARAR DADOS (SÉRIE TEMPORAL)
+#######################################
+# Prever o "Close" do dia seguinte
+df = df_raw[['Close']].copy()
+df.dropna(inplace=True)
+
+# Função para criar lags
+def create_lag_features(data, col='Close', lags=[1,2,3,5,7]):
+    df_ = data.copy()
+    for lag in lags:
+        df_[f'{col}_lag_{lag}'] = df_[col].shift(lag)
+    return df_
+
+df = create_lag_features(df, 'Close', lags=[1,2,3,5,7])
+df.dropna(inplace=True)
+
+# X e y
+X = df.drop(columns=['Close'])
+y = df['Close']
+
+# Split treino/teste
+train_size = int(len(df) * 0.8)
+X_train, X_test = X.iloc[:train_size], X.iloc[train_size:]
+y_train, y_test = y.iloc[:train_size], y.iloc[train_size:]
+
+print(f"\nTamanho treino: {len(X_train)}, teste: {len(X_test)}")
+
+#######################################
+# 3. LSTM
+#######################################
+# Redimensionar X para [samples, timesteps, features].
+
+
+scaler_X = MinMaxScaler()
+X_train_scaled = scaler_X.fit_transform(X_train)
+X_test_scaled  = scaler_X.transform(X_test)
+
+scaler_y = MinMaxScaler()
+y_train_scaled = scaler_y.fit_transform(y_train.values.reshape(-1,1)).ravel()
+y_test_scaled  = scaler_y.transform(y_test.values.reshape(-1,1)).ravel()
+
+# Redimensiona para (N, 1, n_features)
+X_train_lstm = X_train_scaled.reshape((X_train_scaled.shape[0], 1, X_train_scaled.shape[1]))
+X_test_lstm  = X_test_scaled.reshape((X_test_scaled.shape[0], 1, X_test_scaled.shape[1]))
+
+# Definir timesteps e n_features
+timesteps  = X_train_lstm.shape[1]
+n_features = X_train_lstm.shape[2]
+
+# Construção do modelo LSTM
+model_lstm = Sequential()
+model_lstm.add(LSTM(64, return_sequences=True, input_shape=(timesteps, n_features)))
+model_lstm.add(Dropout(0.2))
+model_lstm.add(LSTM(32, return_sequences=False))
+model_lstm.add(Dropout(0.2))
+model_lstm.add(Dense(16, activation='relu'))
+model_lstm.add(Dense(1, activation='linear'))
+
+model_lstm.compile(loss='mse', optimizer='adam')
+
+es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
+model_lstm.fit(
+    X_train_lstm, y_train_scaled,
+    validation_split=0.2,
+    epochs=100,
+    batch_size=16,
+    callbacks=[es],
+    verbose=1
+)
+
+# Previsões LSTM (no conjunto de teste)
+y_pred_lstm_scaled = model_lstm.predict(X_test_lstm)
+y_pred_lstm = scaler_y.inverse_transform(y_pred_lstm_scaled)
+
+#######################################
+# 4. AVALIAÇÃO
+#######################################
+def rmse(y_true, y_pred):
+    return np.sqrt(mean_squared_error(y_true, y_pred))
+
+print("\n=== MÉTRICAS NO CONJUNTO DE TESTE ===")
+print("LSTM:")
+print("   MAE =", mean_absolute_error(y_test, y_pred_lstm))
+print("   RMSE =", rmse(y_test, y_pred_lstm))
+
+#######################################
+# 5. RESULTADOS
+#######################################
+num_test = len(y_test)
+df_index_test = df.index[train_size: train_size + num_test]  # índice para as linhas de teste
+
+results_df = pd.DataFrame({
+    'Date': df_index_test,
+    'Real': y_test.values[:num_test].flatten(),
+    'LSTM': np.array(y_pred_lstm[:num_test]).flatten(),
+})
+
+results_df.set_index('Date', inplace=True)
+
+print("\nAlgumas previsões no teste:")
+print(results_df.head(10))
+
+# Plot
+plt.style.use("cyberpunk")
+datas = results_df.index
+real = results_df['Real']
+lstm = results_df['LSTM']
+
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.plot(datas, real, label='Real', marker='o', linewidth=2)
+ax.plot(datas, lstm, label='LSTM', marker='o', linewidth=2)
+
+plt.title("Previsões do Modelo LSTM vs Valores Reais")
+plt.xlabel("Data")
+plt.ylabel("Preço de Fechamento")
+plt.legend()
+plt.grid(True)
+
+mplcyberpunk.add_glow_effects()
+
+plt.show()
